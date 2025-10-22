@@ -26,11 +26,31 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
-
+#include "hardware/gpio.h"
 #include "bsp/board_api.h"
 #include "tusb.h"
 
 #include "usb_descriptors.h"
+
+// Buttons and the relating pins
+#define BUTTON_A_PIN 0
+#define BUTTON_B_PIN 1
+#define BUTTON_X_PIN 2
+#define BUTTON_Y_PIN 3
+#define DPAD_UP_PIN 4
+#define DPAD_DOWN_PIN 5
+#define DPAD_LEFT_PIN 6
+#define DPAD_RIGHT_PIN 7
+#define BUTTON_LB_PIN 8
+#define BUTTON_RB_PIN 9
+#define BUTTON_SELECT_PIN 10
+#define BUTTON_START_PIN 11
+
+// Array for easy reading
+uint8_t button_pins[12] = {
+    BUTTON_A_PIN, BUTTON_B_PIN, BUTTON_X_PIN, BUTTON_Y_PIN,
+    DPAD_UP_PIN, DPAD_DOWN_PIN, DPAD_LEFT_PIN, DPAD_RIGHT_PIN,
+    BUTTON_LB_PIN, BUTTON_RB_PIN, BUTTON_SELECT_PIN, BUTTON_START_PIN };
 
 //--------------------------------------------------------------------+
 // MACRO CONSTANT TYPEDEF PROTYPES
@@ -59,6 +79,13 @@ int main(void)
 
   // init device stack on configured roothub port
   tud_init(BOARD_TUD_RHPORT);
+
+  // initialize all buttons
+    for(int i=0; i<12; i++){
+      gpio_init(button_pins[i]);
+      gpio_set_dir(button_pins[i], GPIO_IN);
+      gpio_pull_up(button_pins[i]); // or pull_up depending on wiring
+}
 
   if (board_init_after_tusb) {
     board_init_after_tusb();
@@ -108,120 +135,58 @@ void tud_resume_cb(void)
 // USB HID
 //--------------------------------------------------------------------+
 
-static void send_hid_report(uint8_t report_id, uint32_t btn)
+static void send_hid_report(uint8_t report_id, uint32_t btn_mask)
 {
-  // skip if hid is not ready yet
-  if ( !tud_hid_ready() ) return;
+    if (!tud_hid_ready()) return;
 
-  switch(report_id)
-  {
-    case REPORT_ID_KEYBOARD:
-    {
-      // use to avoid send multiple consecutive zero report for keyboard
-      static bool has_keyboard_key = false;
+    hid_gamepad_report_t report = {0};
 
-      if ( btn )
-      {
-        uint8_t keycode[6] = { 0 };
-        keycode[0] = HID_KEY_A;
+    // D-Pad
+    if (btn_mask & (1 << DPAD_UP_PIN)) report.hat = GAMEPAD_HAT_UP;
+    else if (btn_mask & (1 << DPAD_DOWN_PIN)) report.hat = GAMEPAD_HAT_DOWN;
+    else if (btn_mask & (1 << DPAD_LEFT_PIN)) report.hat = GAMEPAD_HAT_LEFT;
+    else if (btn_mask & (1 << DPAD_RIGHT_PIN)) report.hat = GAMEPAD_HAT_RIGHT;
+    else report.hat = GAMEPAD_HAT_CENTERED;
 
-        tud_hid_keyboard_report(REPORT_ID_KEYBOARD, 0, keycode);
-        has_keyboard_key = true;
-      }else
-      {
-        // send empty key report if previously has key pressed
-        if (has_keyboard_key) tud_hid_keyboard_report(REPORT_ID_KEYBOARD, 0, NULL);
-        has_keyboard_key = false;
-      }
-    }
-    break;
+    // Buttons (raw bits)
+    report.buttons = 0;
+    if (btn_mask & (1 << BUTTON_A_PIN)) report.buttons |= (1 << 0);
+    if (btn_mask & (1 << BUTTON_B_PIN)) report.buttons |= (1 << 1);
+    if (btn_mask & (1 << BUTTON_X_PIN)) report.buttons |= (1 << 2);
+    if (btn_mask & (1 << BUTTON_Y_PIN)) report.buttons |= (1 << 3);
+    if (btn_mask & (1 << BUTTON_LB_PIN)) report.buttons |= (1 << 4);
+    if (btn_mask & (1 << BUTTON_RB_PIN)) report.buttons |= (1 << 5);
+    if (btn_mask & (1 << BUTTON_SELECT_PIN)) report.buttons |= (1 << 6);
+    if (btn_mask & (1 << BUTTON_START_PIN)) report.buttons |= (1 << 7);
 
-    case REPORT_ID_MOUSE:
-    {
-      int8_t const delta = 5;
-
-      // no button, right + down, no scroll, no pan
-      tud_hid_mouse_report(REPORT_ID_MOUSE, 0x00, delta, delta, 0, 0);
-    }
-    break;
-
-    case REPORT_ID_CONSUMER_CONTROL:
-    {
-      // use to avoid send multiple consecutive zero report
-      static bool has_consumer_key = false;
-
-      if ( btn )
-      {
-        // volume down
-        uint16_t volume_down = HID_USAGE_CONSUMER_VOLUME_DECREMENT;
-        tud_hid_report(REPORT_ID_CONSUMER_CONTROL, &volume_down, 2);
-        has_consumer_key = true;
-      }else
-      {
-        // send empty key report (release key) if previously has key pressed
-        uint16_t empty_key = 0;
-        if (has_consumer_key) tud_hid_report(REPORT_ID_CONSUMER_CONTROL, &empty_key, 2);
-        has_consumer_key = false;
-      }
-    }
-    break;
-
-    case REPORT_ID_GAMEPAD:
-    {
-      // use to avoid send multiple consecutive zero report for keyboard
-      static bool has_gamepad_key = false;
-
-      hid_gamepad_report_t report =
-      {
-        .x   = 0, .y = 0, .z = 0, .rz = 0, .rx = 0, .ry = 0,
-        .hat = 0, .buttons = 0
-      };
-
-      if ( btn )
-      {
-        report.hat = GAMEPAD_HAT_UP;
-        report.buttons = GAMEPAD_BUTTON_A;
-        tud_hid_report(REPORT_ID_GAMEPAD, &report, sizeof(report));
-
-        has_gamepad_key = true;
-      }else
-      {
-        report.hat = GAMEPAD_HAT_CENTERED;
-        report.buttons = 0;
-        if (has_gamepad_key) tud_hid_report(REPORT_ID_GAMEPAD, &report, sizeof(report));
-        has_gamepad_key = false;
-      }
-    }
-    break;
-
-    default: break;
-  }
+    tud_hid_report(REPORT_ID_GAMEPAD, &report, sizeof(report));
 }
 
 // Every 10ms, we will sent 1 report for each HID profile (keyboard, mouse etc ..)
 // tud_hid_report_complete_cb() is used to send the next report after previous one is complete
 void hid_task(void)
 {
-  // Poll every 10ms
-  const uint32_t interval_ms = 10;
-  static uint32_t start_ms = 0;
+    const uint32_t interval_ms = 10;
+    static uint32_t start_ms = 0;
 
-  if ( board_millis() - start_ms < interval_ms) return; // not enough time
-  start_ms += interval_ms;
+    if (board_millis() - start_ms < interval_ms) return;
+    start_ms += interval_ms;
 
-  uint32_t const btn = board_button_read();
+    uint32_t btn_mask = 0;
+    for (int i = 0; i < 12; i++)
+    {
+        if (!gpio_get(button_pins[i])) btn_mask |= (1 << i);
+    }
 
-  // Remote wakeup
-  if ( tud_suspended() && btn )
-  {
-    // Wake up host if we are in suspend mode
-    // and REMOTE_WAKEUP feature is enabled by host
-    tud_remote_wakeup();
-  }else
-  {
-    // Send the 1st of report chain, the rest will be sent by tud_hid_report_complete_cb()
-    send_hid_report(REPORT_ID_KEYBOARD, btn);
-  }
+    // Remote wakeup
+    if (tud_suspended())
+    {
+        tud_remote_wakeup();
+    }
+    else
+    {
+        send_hid_report(REPORT_ID_GAMEPAD, btn_mask);
+    }
 }
 
 // Invoked when sent REPORT successfully to host
